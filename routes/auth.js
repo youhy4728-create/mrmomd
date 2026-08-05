@@ -13,8 +13,8 @@ const router = express.Router();
  * editing the spreadsheet.
  */
 async function ensureBootstrapAdmin() {
-  const admins = await gas.getAll('Admins');
-  if (admins.length > 0) return;
+  const adminCount = await gas.countAdmins();
+  if (adminCount > 0) return;
   const passwordHash = await bcrypt.hash(config.bootstrapAdmin.password, 10);
   await gas.insert('Admins', {
     username: config.bootstrapAdmin.username,
