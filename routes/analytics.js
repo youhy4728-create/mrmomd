@@ -134,4 +134,52 @@ function aggregateAverage(attempts) {
   return result;
 }
 
+// GET /api/analytics/exam-results?examId=xxx
+router.get('/exam-results', asyncHandler(async (req, res) => {
+  const { examId } = req.query;
+
+  let attempts = await gas.getAll('Attempts');
+  attempts = attempts.filter((a) => a.status === 'completed');
+  if (examId) attempts = attempts.filter((a) => a.examId === examId);
+
+  const students = await gas.getAll('Students');
+  const exams = await gas.getAll('Exams');
+
+  // Build results with student names
+  const results = attempts.map((a) => {
+    const st = students.find((s) => s.id === a.studentId);
+    const ex = exams.find((e) => e.id === a.examId);
+    const pct = parseFloat(a.percentage) || 0;
+    const mins = Math.floor((parseInt(a.durationSeconds) || 0) / 60);
+    return {
+      name: st ? st.name : '—',
+      score: Math.round(pct),
+      time: mins + ' د',
+      date: a.finishTime ? a.finishTime.split('T')[0] : ''
+    };
+  }).sort((a, b) => b.score - a.score);
+
+  // Stats
+  const scores = results.map((r) => r.score);
+  const avgScore = scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0;
+  const highestScore = scores.length > 0 ? Math.max(...scores) : 0;
+  const lowestScore = scores.length > 0 ? Math.min(...scores) : 0;
+
+  // Leaderboard (top 10)
+  const leaderboard = results.slice(0, 10).map((r) => ({
+    name: r.name,
+    time: r.time,
+    score: r.score
+  }));
+
+  res.json({
+    avgScore,
+    highestScore,
+    lowestScore,
+    attemptsCount: results.length,
+    leaderboard,
+    results
+  });
+}));
+
 module.exports = router;

@@ -27,6 +27,105 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   res.json({ ok: true, data: { ...exam, questions } });
 }));
 
+// POST /api/exams/:id/submit  (student submits exam answers directly by examId)
+router.post('/:id/submit', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
+  const examId = req.params.id;
+  const { answers, timeTaken } = req.body;
+
+  const exam = await gas.getById('Exams', examId);
+  if (!exam || exam.status !== 'published') {
+    return res.status(404).json({ ok: false, error: 'Exam not found or not published' });
+  }
+
+  // Check max attempts
+  const priorAttempts = await gas.find('Attempts', { examId, studentId: req.user.id });
+  const maxAttempts = parseInt(exam.maxAttempts, 10) || 1;
+  if (priorAttempts.length >= maxAttempts) {
+    return res.status(403).json({ ok: false, error: 'Maximum attempts reached' });
+  }
+
+  // Create attempt record
+  const attempt = await gas.insert('Attempts', {
+    examId,
+    studentId: req.user.id,
+    attemptNumber: priorAttempts.length + 1,
+    answers: JSON.stringify(answers || {}),
+    score: 0,
+    maxScore: 0,
+    percentage: 0,
+    passed: false,
+    startTime: new Date(Date.now() - (timeTaken || 0) * 60000).toISOString(),
+    finishTime: new Date().toISOString(),
+    durationSeconds: (timeTaken || 0) * 60,
+    status: 'completed',
+    needsManualGrading: false
+  });
+
+  // Grade the attempt
+  const questions = await gas.find('Questions', { examId });
+  const { gradeAttempt } = require('../utils/grading');
+  const graded = gradeAttempt(attempt, questions, exam);
+
+  // Update attempt with grades
+  const updated = await gas.update('Attempts', attempt.id, {
+    score: graded.score,
+    maxScore: graded.maxScore,
+    percentage: graded.percentage,
+    passed: graded.passed,
+    needsManualGrading: graded.needsManualGrading
+  });
+
+  // Calculate rank among all attempts for this exam
+  const allAttempts = await gas.find('Attempts', { examId, status: 'completed' });
+  const ranked = allAttempts
+    .map((a) => ({ id: a.id, percentage: parseFloat(a.percentage) || 0 }))
+    .sort((a, b) => b.percentage - a.percentage);
+  const rank = ranked.findIndex((r) => r.id === attempt.id) + 1;
+
+  // Return format expected by student frontend
+  res.json({
+    score: Math.round(graded.percentage),
+    rank,
+    timeTaken: timeTaken || 0,
+    passed: graded.passed
+  });
+}));
+
+// GET /api/exams?courseId=xxx  (student sees exams for a specific unit)
+router.get('/', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
+  const { courseId } = req.query;
+  if (!courseId) {
+    return res.status(400).json({ ok: false, error: 'courseId is required' });
+  }
+
+  const student = await gas.getById('Students', req.user.id);
+  const unitIds = (student.unitIds || '').split(',').filter(Boolean);
+  if (!unitIds.includes(courseId)) {
+    return res.status(403).json({ ok: false, error: 'Access denied' });
+  }
+
+  const exams = await gas.find('Exams', { unitId: courseId });
+  const attempts = await gas.find('Attempts', { studentId: req.user.id });
+
+  const enriched = exams.map((e) => {
+    const sAttempts = attempts.filter((a) => a.examId === e.id && a.status === 'completed');
+    const lastAttempt = sAttempts.sort((a, b) => new Date(b.finishTime) - new Date(a.finishTime))[0];
+    return {
+      id: e.id,
+      title: e.title,
+      questionCount: (e.questionIds || '').split(',').filter(Boolean).length,
+      duration: e.timerMinutes || 0,
+      type: e.type || 'متعدد',
+      available: true,
+      completed: sAttempts.length > 0,
+      score: lastAttempt ? Math.round(parseFloat(lastAttempt.percentage) || 0) : null,
+      result: lastAttempt ? { score: Math.round(parseFloat(lastAttempt.percentage) || 0) } : null
+    };
+  });
+
+  res.json({ exams: enriched });
+}));
+
 router.use(requireAuth, requireRole('admin'));
 
 router.post('/', asyncHandler(async (req, res) => {

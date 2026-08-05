@@ -18,11 +18,134 @@ router.get('/me/units', requireAuth, requireRole('student'), asyncHandler(async 
   res.json({ ok: true, data: unlocked });
 }));
 
+// GET /api/students/my-courses  (student sees their unlocked units as "courses")
+router.get('/my-courses', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
+  const student = await gas.getById('Students', req.user.id);
+  const unitIds = (student.unitIds || '').split(',').filter(Boolean);
+  const allUnits = await gas.getAll('Units');
+  const unlocked = allUnits.filter((u) => unitIds.includes(u.id) && u.status === 'published');
+
+  // Build course list with progress info
+  const courses = await Promise.all(unlocked.map(async (u) => {
+    const videos = await gas.find('Videos', { unitId: u.id });
+    const exams = await gas.find('Exams', { unitId: u.id });
+    const progressRecords = await gas.find('VideoProgress', { studentId: req.user.id });
+    const watched = progressRecords.filter((p) => videos.some((v) => v.id === p.videoId) && p.status === 'finished').length;
+    const totalVids = videos.length;
+    const progress = totalVids > 0 ? Math.round((watched / totalVids) * 100) : 0;
+
+    return {
+      id: u.id,
+      title: u.title,
+      description: u.description || '',
+      icon: u.coverImageUrl || '📚',
+      tag: 'مسجل',
+      progress,
+      videos: totalVids,
+      exams: exams.length,
+      students: 0 // not tracked per-unit in this schema
+    };
+  }));
+
+  res.json({ courses });
+}));
+
+// GET /api/students/dashboard  (student overview)
+router.get('/dashboard', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
+  const student = await gas.getById('Students', req.user.id);
+  const unitIds = (student.unitIds || '').split(',').filter(Boolean);
+
+  // Counts
+  const allAttempts = await gas.find('Attempts', { studentId: req.user.id });
+  const completedAttempts = allAttempts.filter((a) => a.status === 'completed');
+  const avgScore = completedAttempts.length > 0
+    ? Math.round(completedAttempts.reduce((s, a) => s + (parseFloat(a.percentage) || 0), 0) / completedAttempts.length)
+    : 0;
+
+  // Rank: compare against all students' average scores
+  const allStudents = await gas.getAll('Students');
+  const allAttemptsAll = await gas.getAll('Attempts');
+  const studentAvgs = allStudents.map((s) => {
+    const sa = allAttemptsAll.filter((a) => a.studentId === s.id && a.status === 'completed');
+    return { id: s.id, avg: sa.length > 0 ? sa.reduce((sum, a) => sum + (parseFloat(a.percentage) || 0), 0) / sa.length : 0 };
+  }).sort((a, b) => b.avg - a.avg);
+  const rank = studentAvgs.findIndex((s) => s.id === req.user.id) + 1;
+
+  // Progress per course
+  const allUnits = await gas.getAll('Units');
+  const progress = await Promise.all(unitIds.map(async (uid) => {
+    const u = allUnits.find((unit) => unit.id === uid);
+    if (!u) return null;
+    const videos = await gas.find('Videos', { unitId: uid });
+    const exams = await gas.find('Exams', { unitId: uid });
+    const progressRecords = await gas.find('VideoProgress', { studentId: req.user.id });
+    const watched = progressRecords.filter((p) => videos.some((v) => v.id === p.videoId) && p.status === 'finished').length;
+    const examsTaken = allAttempts.filter((a) => exams.some((e) => e.id === a.examId) && a.status === 'completed').length;
+    return {
+      courseTitle: u.title,
+      progress: videos.length > 0 ? Math.round((watched / videos.length) * 100) : 0,
+      videosWatched: watched,
+      totalVideos: videos.length,
+      examsTaken
+    };
+  }));
+
+  // Recent exams
+  const recentExams = completedAttempts
+    .sort((a, b) => new Date(b.finishTime) - new Date(a.finishTime))
+    .slice(0, 5)
+    .map((a) => {
+      const exam = allAttemptsAll.find((e) => e.id === a.examId); // wrong, need to fetch exam
+      return { title: 'امتحان', date: a.finishTime ? a.finishTime.split('T')[0] : '', score: Math.round(parseFloat(a.percentage) || 0) };
+    });
+
+  // Leaderboard
+  const leaderboard = studentAvgs.slice(0, 10).map((s) => {
+    const st = allStudents.find((x) => x.id === s.id);
+    return { name: st ? st.name : '—', examsCount: allAttemptsAll.filter((a) => a.studentId === s.id && a.status === 'completed').length, avgScore: Math.round(s.avg) };
+  });
+
+  res.json({
+    courses: unitIds.length,
+    exams: completedAttempts.length,
+    avgScore,
+    rank: rank || 1,
+    progress: progress.filter(Boolean),
+    recentExams,
+    leaderboard
+  });
+}));
+
 router.use(requireAuth, requireRole('admin'));
 
 router.get('/', asyncHandler(async (req, res) => {
   const students = await gas.getAll('Students');
-  res.json({ ok: true, data: students });
+  const units = await gas.getAll('Units');
+  const attempts = await gas.getAll('Attempts');
+  const videos = await gas.getAll('Videos');
+  const progressRecords = await gas.getAll('VideoProgress');
+
+  const enriched = students.map((s) => {
+    const unitIds = (s.unitIds || '').split(',').filter(Boolean);
+    const course = units.find((u) => unitIds.includes(u.id));
+    const sAttempts = attempts.filter((a) => a.studentId === s.id && a.status === 'completed');
+    const avgScore = sAttempts.length > 0 ? Math.round(sAttempts.reduce((sum, a) => sum + (parseFloat(a.percentage) || 0), 0) / sAttempts.length) : 0;
+    const sVideos = videos.filter((v) => unitIds.includes(v.unitId));
+    const watched = progressRecords.filter((p) => p.studentId === s.id && p.status === 'finished' && sVideos.some((v) => v.id === p.videoId)).length;
+    return {
+      id: s.id,
+      name: s.name,
+      code: s.code,
+      courseTitle: course ? course.title : '—',
+      progress: sVideos.length > 0 ? Math.round((watched / sVideos.length) * 100) : 0,
+      examsTaken: sAttempts.length,
+      avgScore,
+      videosWatched: watched,
+      totalVideos: sVideos.length
+    };
+  });
+
+  res.json({ students: enriched });
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {

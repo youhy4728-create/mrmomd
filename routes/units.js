@@ -5,20 +5,82 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Public (student side): only published units
+// GET /api/units?courseId=xxx  (student course detail + lessons)
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
+  const { courseId } = req.query;
+
+  // If courseId is provided, return that specific unit with its content
+  if (courseId) {
+    const unit = await gas.getById('Units', courseId);
+    if (!unit || unit.status !== 'published') {
+      return res.status(404).json({ ok: false, error: 'Unit not found' });
+    }
+
+    // Students must have access
+    if (req.user.role === 'student') {
+      const student = await gas.getById('Students', req.user.id);
+      const unitIds = (student.unitIds || '').split(',').filter(Boolean);
+      if (!unitIds.includes(courseId)) {
+        return res.status(403).json({ ok: false, error: 'Access denied' });
+      }
+    }
+
+    const videos = await gas.find('Videos', { unitId: courseId });
+    const exams = await gas.find('Exams', { unitId: courseId });
+
+    // Build "units" (lessons) array for frontend accordion
+    const lessons = [
+      ...videos.map((v) => ({
+        title: v.title,
+        type: 'video',
+        duration: v.duration ? v.duration + ' د' : '',
+        watched: false // will be filled by frontend if needed
+      })),
+      ...exams.map((e) => ({
+        title: e.title,
+        type: 'exam',
+        duration: (e.timerMinutes || 0) + ' د',
+        id: e.id
+      }))
+    ];
+
+    return res.json({
+      id: unit.id,
+      title: unit.title,
+      description: unit.description || '',
+      units: [
+        {
+          title: unit.title,
+          videos: videos.length,
+          exams: exams.length,
+          lessons
+        }
+      ],
+      videos: videos.length,
+      exams: exams.length,
+      duration: 0,
+      students: 0,
+      popular: false,
+      rating: 0
+    });
+  }
+
+  // No courseId = admin list all units
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Forbidden' });
+  }
+  const units = await gas.getAll('Units');
+  units.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
+  res.json({ ok: true, data: units });
+}));
+
+// Public list (no auth needed)
 router.get('/public', asyncHandler(async (req, res) => {
   const units = await gas.getAll('Units');
   res.json({ ok: true, data: units.filter((u) => u.status === 'published') });
 }));
 
 router.use(requireAuth, requireRole('admin'));
-
-// GET all units (admin sees everything, including drafts/hidden)
-router.get('/', asyncHandler(async (req, res) => {
-  const units = await gas.getAll('Units');
-  units.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
-  res.json({ ok: true, data: units });
-}));
 
 router.get('/:id', asyncHandler(async (req, res) => {
   const unit = await gas.getById('Units', req.params.id);
