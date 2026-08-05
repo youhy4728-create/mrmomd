@@ -14,14 +14,15 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json({ ok: true, data: unitId ? codes.filter((c) => c.unitId === unitId) : codes });
 }));
 
-// POST /api/codes/generate  { unitId, count, prefix }
+// POST /api/codes/generate  { unitId (optional — omit for a code that unlocks every course), count, prefix }
 router.post('/generate', asyncHandler(async (req, res) => {
   const { unitId, count, prefix } = req.body;
-  if (!unitId || !count) return res.status(400).json({ ok: false, error: 'unitId and count are required' });
+  if (!count) return res.status(400).json({ ok: false, error: 'count is required' });
   const n = Math.min(parseInt(count, 10) || 0, 1000);
   if (n <= 0) return res.status(400).json({ ok: false, error: 'count must be a positive number (max 1000)' });
 
-  const codes = await gas.generateCodes(unitId, n, prefix);
+  // No unitId => a general-access code, not tied to one course.
+  const codes = await gas.generateCodes(unitId || '', n, prefix);
   res.status(201).json({ ok: true, data: codes });
 }));
 

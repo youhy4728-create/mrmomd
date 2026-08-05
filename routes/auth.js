@@ -24,6 +24,52 @@ async function ensureBootstrapAdmin() {
   });
 }
 
+/**
+ * A Codes row with no unitId is a general-access code: it should unlock
+ * every currently published course, not just one. This is re-resolved on
+ * every login (not just the first) so a general code also unlocks any
+ * course published after the student first signed in.
+ */
+async function resolveGrantedUnitIds(codeRecord) {
+  if (codeRecord.unitId) return [codeRecord.unitId];
+  const units = await gas.find('Units', { status: 'published' });
+  return units.map((u) => u.id);
+}
+
+async function loginOrCreateStudent(codeRecord, name, phone) {
+  const grantedUnitIds = await resolveGrantedUnitIds(codeRecord);
+  const existingByCode = (await gas.find('Students', { code: codeRecord.code }))[0];
+
+  let student;
+  if (existingByCode) {
+    const currentUnitIds = new Set((existingByCode.unitIds || '').split(',').filter(Boolean));
+    grantedUnitIds.forEach((id) => currentUnitIds.add(id));
+    student = await gas.update('Students', existingByCode.id, {
+      unitIds: [...currentUnitIds].join(','),
+      lastLoginAt: new Date().toISOString()
+    });
+  } else {
+    student = await gas.insert('Students', {
+      name,
+      phone: phone || '',
+      code: codeRecord.code,
+      unitIds: grantedUnitIds.join(','),
+      lastLoginAt: new Date().toISOString()
+    });
+  }
+
+  if (codeRecord.status !== 'active') {
+    await gas.update('Codes', codeRecord.id, {
+      status: 'active',
+      studentId: student.id,
+      studentName: student.name,
+      activationDate: new Date().toISOString()
+    });
+  }
+
+  return student;
+}
+
 // POST /api/auth/admin/login
 router.post('/admin/login', asyncHandler(async (req, res) => {
   const { username, password } = req.body;
@@ -56,39 +102,7 @@ router.post('/student/login', asyncHandler(async (req, res) => {
   const codeRecord = (await gas.find('Codes', { code: code.trim().toUpperCase() }))[0];
   if (!codeRecord) return res.status(401).json({ ok: false, error: 'Invalid code' });
 
-  let student;
-  const existingByCode = (await gas.find('Students', { code: codeRecord.code }))[0];
-
-  if (existingByCode) {
-    student = existingByCode;
-    const currentUnitIds = (student.unitIds || '').split(',').filter(Boolean);
-    if (!currentUnitIds.includes(codeRecord.unitId)) {
-      currentUnitIds.push(codeRecord.unitId);
-      student = await gas.update('Students', student.id, {
-        unitIds: currentUnitIds.join(','),
-        lastLoginAt: new Date().toISOString()
-      });
-    } else {
-      student = await gas.update('Students', student.id, { lastLoginAt: new Date().toISOString() });
-    }
-  } else {
-    student = await gas.insert('Students', {
-      name,
-      phone: phone || '',
-      code: codeRecord.code,
-      unitIds: codeRecord.unitId,
-      lastLoginAt: new Date().toISOString()
-    });
-  }
-
-  if (codeRecord.status !== 'active') {
-    await gas.update('Codes', codeRecord.id, {
-      status: 'active',
-      studentId: student.id,
-      studentName: student.name,
-      activationDate: new Date().toISOString()
-    });
-  }
+  const student = await loginOrCreateStudent(codeRecord, name, phone);
 
   const userPayload = { id: student.id, name: student.name, code: student.code, role: 'student' };
   const accessToken = signAccessToken(userPayload);
@@ -147,39 +161,7 @@ router.post('/student-login', asyncHandler(async (req, res) => {
   const codeRecord = (await gas.find('Codes', { code: code.trim().toUpperCase() }))[0];
   if (!codeRecord) return res.status(401).json({ ok: false, error: 'Invalid code' });
 
-  let student;
-  const existingByCode = (await gas.find('Students', { code: codeRecord.code }))[0];
-
-  if (existingByCode) {
-    student = existingByCode;
-    const currentUnitIds = (student.unitIds || '').split(',').filter(Boolean);
-    if (!currentUnitIds.includes(codeRecord.unitId)) {
-      currentUnitIds.push(codeRecord.unitId);
-      student = await gas.update('Students', student.id, {
-        unitIds: currentUnitIds.join(','),
-        lastLoginAt: new Date().toISOString()
-      });
-    } else {
-      student = await gas.update('Students', student.id, { lastLoginAt: new Date().toISOString() });
-    }
-  } else {
-    student = await gas.insert('Students', {
-      name,
-      phone: '',
-      code: codeRecord.code,
-      unitIds: codeRecord.unitId,
-      lastLoginAt: new Date().toISOString()
-    });
-  }
-
-  if (codeRecord.status !== 'active') {
-    await gas.update('Codes', codeRecord.id, {
-      status: 'active',
-      studentId: student.id,
-      studentName: student.name,
-      activationDate: new Date().toISOString()
-    });
-  }
+  const student = await loginOrCreateStudent(codeRecord, name, '');
 
   const userPayload = { id: student.id, name: student.name, code: student.code, role: 'student' };
   const token = signAccessToken(userPayload);
