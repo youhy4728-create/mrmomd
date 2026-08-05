@@ -16,7 +16,7 @@ async function ensureBootstrapAdmin() {
   const adminCount = await gas.countAdmins();
   if (adminCount > 0) return;
   const passwordHash = await bcrypt.hash(config.bootstrapAdmin.password, 10);
-  await gas.insert('Admins', {
+  await gas.insertAdmin({
     username: config.bootstrapAdmin.username,
     passwordHash,
     name: config.bootstrapAdmin.name,
