@@ -33,7 +33,7 @@ router.post('/admin/login', asyncHandler(async (req, res) => {
 
   await ensureBootstrapAdmin();
 
-  const admin = await getAdminByUsername(username);
+  const admin = await gas.getAdminByUsername(username);
   if (!admin) return res.status(401).json({ ok: false, error: 'Invalid credentials' });
 
   const valid = await bcrypt.compare(password, admin.passwordHash);
@@ -123,7 +123,7 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   await ensureBootstrapAdmin();
 
-  const admin = await getAdminByUsername(username);
+  const admin = await gas.getAdminByUsername(username);
   if (!admin) return res.status(401).json({ ok: false, error: 'Invalid credentials' });
 
   const valid = await bcrypt.compare(password, admin.passwordHash);
