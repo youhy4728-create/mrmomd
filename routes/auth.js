@@ -46,9 +46,9 @@ router.post('/admin/login', asyncHandler(async (req, res) => {
   res.json({ ok: true, data: { accessToken, refreshToken, user: userPayload } });
 }));
 
-// POST /api/auth/student/login  { code, name }
+// POST /api/auth/student/login  { code, name, phone }
 router.post('/student/login', asyncHandler(async (req, res) => {
-  const { code, name } = req.body;
+  const { code, name, phone } = req.body;
   if (!code || !name) {
     return res.status(400).json({ ok: false, error: 'code and name are required' });
   }
@@ -74,6 +74,7 @@ router.post('/student/login', asyncHandler(async (req, res) => {
   } else {
     student = await gas.insert('Students', {
       name,
+      phone: phone || '',
       code: codeRecord.code,
       unitIds: codeRecord.unitId,
       lastLoginAt: new Date().toISOString()

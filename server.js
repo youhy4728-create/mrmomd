@@ -59,6 +59,15 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ ok: false, error: err.message || 'Internal server error' });
 });
 
-app.listen(config.port, () => {
-  console.log(`MFX Platform backend listening on port ${config.port} (${config.nodeEnv})`);
-});
+// On Vercel (and any other serverless platform) the app is imported and
+// wrapped by the platform's own handler — it must never call listen()
+// itself, or the deployment crashes/hangs. Only start a real HTTP server
+// when this file is executed directly (`node server.js`, Railway, Render,
+// local `npm run dev`, etc).
+if (require.main === module) {
+  app.listen(config.port, () => {
+    console.log(`MFX Platform backend listening on port ${config.port} (${config.nodeEnv})`);
+  });
+}
+
+module.exports = app;
