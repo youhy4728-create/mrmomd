@@ -20,6 +20,7 @@ const analyticsRoutes = require('./routes/analytics');
 const settingsRoutes = require('./routes/settings');
 
 const app = express();
+app.set('trust proxy', 1); // Required for Railway + express-rate-limit
 
 app.use(helmetMiddleware);
 app.use(corsMiddleware);
