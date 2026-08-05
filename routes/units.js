@@ -25,25 +25,30 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
       }
     }
 
-    const videos = await gas.find('Videos', { unitId: courseId });
-    const exams = await gas.find('Exams', { unitId: courseId });
+    let [videos, exams, presentations] = await Promise.all([
+      gas.find('Videos', { unitId: courseId }),
+      gas.find('Exams', { unitId: courseId }),
+      gas.find('Presentations', { unitId: courseId })
+    ]);
 
-    // Build "units" (lessons) array for frontend accordion
-    const lessons = [
-      ...videos.map((v) => ({
-        title: v.title,
-        type: 'video',
-        duration: v.duration ? v.duration + ' د' : '',
-        watched: false // will be filled by frontend if needed
-      })),
-      ...exams.map((e) => ({
-        title: e.title,
-        type: 'exam',
-        duration: (e.timerMinutes || 0) + ' د',
-        id: e.id
-      }))
-    ];
+    if (req.user.role !== 'admin') {
+      videos = videos.filter((v) => v.status === 'published');
+      exams = exams.filter((e) => e.status === 'published');
+      presentations = presentations.filter((p) => p.status === 'published');
+    }
+    videos.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
+    exams.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
+    presentations.sort((a, b) => (parseFloat(a.order) || 0) - (parseFloat(b.order) || 0));
 
+    // Mark which videos this student has already finished
+    let watchedVideoIds = new Set();
+    if (req.user.role === 'student') {
+      const progress = await gas.find('VideoProgress', { studentId: req.user.id });
+      watchedVideoIds = new Set(progress.filter((p) => p.status === 'finished').map((p) => p.videoId));
+    }
+
+    // Build the "units" (lessons) array the accordion actually renders:
+    // real video/exam/presentation objects, not counts.
     return res.json({
       id: unit.id,
       title: unit.title,
@@ -51,9 +56,18 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
       units: [
         {
           title: unit.title,
-          videos: videos.length,
-          exams: exams.length,
-          lessons
+          videos: videos.map((v) => ({
+            id: v.id,
+            title: v.title,
+            duration: v.durationSeconds ? Math.round(v.durationSeconds / 60) + ' د' : '',
+            watched: watchedVideoIds.has(v.id)
+          })),
+          presentations: presentations.map((p) => ({
+            id: p.id,
+            title: p.title,
+            slideCount: p.slideCount || 0
+          })),
+          exams: exams.map((e) => ({ id: e.id, title: e.title }))
         }
       ],
       videos: videos.length,

@@ -18,6 +18,9 @@ const studentsRoutes = require('./routes/students');
 const notificationsRoutes = require('./routes/notifications');
 const analyticsRoutes = require('./routes/analytics');
 const settingsRoutes = require('./routes/settings');
+const presentationsRoutes = require('./routes/presentations');
+const commentsRoutes = require('./routes/comments');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 app.set('trust proxy', 1); // Required for Railway + express-rate-limit
@@ -45,6 +48,9 @@ app.use('/api/students', studentsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/presentations', presentationsRoutes);
+app.use('/api/comments', commentsRoutes);
+app.use('/api/chat', chatRoutes);
 
 // ---------- Serve the frontend (admin dashboard + student site) ----------
 const frontendRoot = path.join(__dirname, '..', 'frontend');

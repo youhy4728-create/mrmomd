@@ -154,6 +154,72 @@ router.get('/:id', asyncHandler(async (req, res) => {
   res.json({ ok: true, data: student });
 }));
 
+// GET /api/students/:id/activity  - everything a specific student has been doing,
+// used by the "search a student, see what they're up to" admin screen
+router.get('/:id/activity', asyncHandler(async (req, res) => {
+  const student = await gas.getById('Students', req.params.id);
+  if (!student) return res.status(404).json({ ok: false, error: 'Student not found' });
+
+  const [videos, units, videoProgress, attempts, exams, comments, presentationProgress] = await Promise.all([
+    gas.getAll('Videos'),
+    gas.getAll('Units'),
+    gas.find('VideoProgress', { studentId: req.params.id }),
+    gas.find('Attempts', { studentId: req.params.id }),
+    gas.getAll('Exams'),
+    gas.getAll('Comments'),
+    gas.find('BookProgress', { studentId: req.params.id })
+  ]);
+
+  const unitIds = (student.unitIds || '').split(',').filter(Boolean);
+  const enrolledUnits = units.filter((u) => unitIds.includes(u.id)).map((u) => ({ id: u.id, title: u.title }));
+
+  const videoActivity = videoProgress
+    .map((p) => {
+      const v = videos.find((vid) => vid.id === p.videoId);
+      return {
+        videoTitle: v ? v.title : 'فيديو محذوف',
+        status: p.status,
+        watchPercentage: Math.round(parseFloat(p.watchPercentage) || 0),
+        lastUpdatedAt: p.lastUpdatedAt
+      };
+    })
+    .sort((a, b) => new Date(b.lastUpdatedAt) - new Date(a.lastUpdatedAt));
+
+  const examActivity = attempts
+    .map((a) => {
+      const ex = exams.find((e) => e.id === a.examId);
+      return {
+        examTitle: ex ? ex.title : 'امتحان محذوف',
+        percentage: Math.round(parseFloat(a.percentage) || 0),
+        passed: String(a.passed) === 'true',
+        status: a.status,
+        finishTime: a.finishTime
+      };
+    })
+    .sort((a, b) => new Date(b.finishTime) - new Date(a.finishTime));
+
+  const myComments = comments
+    .filter((c) => c.authorId === req.params.id)
+    .map((c) => {
+      const v = videos.find((vid) => vid.id === c.videoId);
+      return { videoTitle: v ? v.title : 'فيديو محذوف', text: c.text, createdAt: c.createdAt };
+    })
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  res.json({
+    ok: true,
+    data: {
+      student: { id: student.id, name: student.name, code: student.code, phone: student.phone, lastLoginAt: student.lastLoginAt },
+      enrolledUnits,
+      videosWatched: videoActivity.filter((v) => v.status === 'finished').length,
+      videoActivity,
+      booksOpened: presentationProgress.length,
+      examActivity,
+      comments: myComments
+    }
+  });
+}));
+
 router.patch('/:id', asyncHandler(async (req, res) => {
   const updated = await gas.update('Students', req.params.id, req.body);
   if (!updated) return res.status(404).json({ ok: false, error: 'Student not found' });
