@@ -20,6 +20,27 @@ const fallbackStore = {
 let gasAvailable = true;
 let lastGasError = null;
 
+// ---------- Short-lived read cache ----------
+// Google Sheets reads go through Apps Script and are the slowest part of
+// every page load. Most pages fire several reads back to back (units list,
+// exam list, student list...) that all hit the same handful of sheets
+// within a second or two of each other. Caching reads for a few seconds
+// avoids repeating that round trip without risking stale data for long.
+const READ_CACHE_TTL_MS = 15000;
+const readCache = new Map(); // key -> { value, expiresAt }
+const READ_ACTIONS = new Set([
+  'getAll', 'getById', 'find', 'getAdminByUsername', 'countAdmins',
+  'getStudentByCode', 'getSettings'
+]);
+
+function cacheKey(action, payload) {
+  return action + ':' + JSON.stringify(payload || {});
+}
+
+function clearReadCache() {
+  readCache.clear();
+}
+
 /**
  * Every call to Google Sheets/Drive goes through this single function.
  * The Apps Script Web App is the only thing that ever touches the sheet.
@@ -27,6 +48,16 @@ let lastGasError = null;
 async function callGas(action, payload = {}) {
   if (!config.gas.endpointUrl) {
     throw new Error('GAS_ENDPOINT_URL is not configured in .env');
+  }
+
+  const isRead = READ_ACTIONS.has(action);
+  const key = isRead ? cacheKey(action, payload) : null;
+
+  if (key) {
+    const cached = readCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
   }
 
   const response = await axios.post(
@@ -39,6 +70,15 @@ async function callGas(action, payload = {}) {
   if (!body.ok) {
     throw new Error(body.error || 'Unknown Google Apps Script error');
   }
+
+  if (key) {
+    readCache.set(key, { value: body.data, expiresAt: Date.now() + READ_CACHE_TTL_MS });
+  } else {
+    // Any write can change what a read would return, so drop everything
+    // cached rather than trying to patch individual entries.
+    clearReadCache();
+  }
+
   return body.data;
 }
 
