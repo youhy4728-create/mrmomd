@@ -58,36 +58,32 @@ router.post('/:id/submit', requireAuth, requireRole('student'), asyncHandler(asy
     return res.status(403).json({ ok: false, error: 'Maximum attempts reached' });
   }
 
-  // Create attempt record
+  // Grade first (this only reads, and reads are cached/fast), then insert
+  // the attempt already-graded in a single write. The old version did an
+  // insert followed by a separate update — two write-lock round trips per
+  // submission. Cutting that to one write roughly doubles how many
+  // students can submit at the same moment (e.g. right as a timer ends).
+  const questions = await gas.find('Questions', { examId });
+  const { gradeAttempt } = require('../utils/grading');
+  const graded = gradeAttempt(questions, answers || {}, exam);
+
   const attempt = await gas.insert('Attempts', {
     examId,
     studentId: req.user.id,
     attemptNumber: priorAttempts.length + 1,
     answers: JSON.stringify(answers || {}),
-    score: 0,
-    maxScore: 0,
-    percentage: 0,
-    passed: false,
-    startTime: new Date(Date.now() - (timeTaken || 0) * 60000).toISOString(),
-    finishTime: new Date().toISOString(),
-    durationSeconds: (timeTaken || 0) * 60,
-    status: 'completed',
-    needsManualGrading: false
-  });
-
-  // Grade the attempt
-  const questions = await gas.find('Questions', { examId });
-  const { gradeAttempt } = require('../utils/grading');
-  const graded = gradeAttempt(questions, answers || {}, exam);
-
-  // Update attempt with grades
-  const updated = await gas.update('Attempts', attempt.id, {
     score: graded.score,
     maxScore: graded.maxScore,
     percentage: graded.percentage,
     passed: graded.passed,
+    startTime: new Date(Date.now() - (timeTaken || 0) * 60000).toISOString(),
+    finishTime: new Date().toISOString(),
+    durationSeconds: (timeTaken || 0) * 60,
+    status: 'completed',
     needsManualGrading: graded.needsManualGrading
   });
+
+  const updated = attempt;
 
   // Calculate rank among all attempts for this exam
   const allAttempts = await gas.find('Attempts', { examId, status: 'completed' });

@@ -22,12 +22,22 @@ let lastGasError = null;
 
 // ---------- Short-lived read cache ----------
 // Google Sheets reads go through Apps Script and are the slowest part of
-// every page load. Most pages fire several reads back to back (units list,
-// exam list, student list...) that all hit the same handful of sheets
-// within a second or two of each other. Caching reads for a few seconds
-// avoids repeating that round trip without risking stale data for long.
-const READ_CACHE_TTL_MS = 15000;
-const readCache = new Map(); // key -> { value, expiresAt }
+// every page load (roughly 1-3s per call, regardless of how simple the
+// read is). Two things matter when many students hit the site together:
+//
+// 1. STALE-WHILE-REVALIDATE: once a value has been fetched once, we keep
+//    serving it instantly even after it "expires" while a background
+//    refresh quietly replaces it — nobody ever waits on Apps Script for
+//    data that's only a few seconds out of date.
+// 2. REQUEST COALESCING: if 100 students ask for the same thing (e.g. the
+//    published course list) at the same moment and nothing is cached yet,
+//    only ONE request actually goes to Apps Script — everyone else waits
+//    on that same in-flight promise instead of firing 100 separate calls
+//    and hammering the sheet (and Apps Script's execution quota) at once.
+const READ_CACHE_FRESH_MS = 20000;   // serve instantly, no network call at all
+const READ_CACHE_STALE_MS = 120000;  // serve instantly but refresh quietly in the background
+const readCache = new Map();  // key -> { value, cachedAt }
+const inFlight = new Map();   // key -> Promise (de-dupes concurrent identical requests)
 const READ_ACTIONS = new Set([
   'getAll', 'getById', 'find', 'getAdminByUsername', 'countAdmins',
   'getStudentByCode', 'getSettings'
@@ -39,6 +49,21 @@ function cacheKey(action, payload) {
 
 function clearReadCache() {
   readCache.clear();
+  // Deliberately leave `inFlight` alone — requests already in flight still
+  // need to resolve to whoever is awaiting them.
+}
+
+async function fetchFromGas_(action, payload) {
+  const response = await axios.post(
+    config.gas.endpointUrl,
+    { apiKey: config.gas.apiKey, action, payload },
+    { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+  );
+  const body = response.data;
+  if (!body.ok) {
+    throw new Error(body.error || 'Unknown Google Apps Script error');
+  }
+  return body.data;
 }
 
 /**
@@ -51,35 +76,48 @@ async function callGas(action, payload = {}) {
   }
 
   const isRead = READ_ACTIONS.has(action);
-  const key = isRead ? cacheKey(action, payload) : null;
+  if (!isRead) {
+    // Writes always go straight through, then invalidate every cached
+    // read so nobody sees stale data after a change.
+    const data = await fetchFromGas_(action, payload);
+    clearReadCache();
+    return data;
+  }
 
-  if (key) {
-    const cached = readCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) {
+  const key = cacheKey(action, payload);
+  const cached = readCache.get(key);
+  const now = Date.now();
+
+  if (cached) {
+    const age = now - cached.cachedAt;
+    if (age < READ_CACHE_FRESH_MS) {
+      return cached.value; // fully fresh — instant, no network call
+    }
+    if (age < READ_CACHE_STALE_MS) {
+      // Stale but usable: hand back the cached value immediately, and
+      // kick off (at most one) background refresh for next time.
+      if (!inFlight.has(key)) {
+        const refresh = fetchFromGas_(action, payload)
+          .then((data) => { readCache.set(key, { value: data, cachedAt: Date.now() }); return data; })
+          .catch(() => {}) // a failed background refresh just keeps serving the old value
+          .finally(() => inFlight.delete(key));
+        inFlight.set(key, refresh);
+      }
       return cached.value;
     }
+    // Older than the stale window — fall through to a real, blocking fetch.
   }
 
-  const response = await axios.post(
-    config.gas.endpointUrl,
-    { apiKey: config.gas.apiKey, action, payload },
-    { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-  );
-
-  const body = response.data;
-  if (!body.ok) {
-    throw new Error(body.error || 'Unknown Google Apps Script error');
+  // Nothing usable cached: dedupe concurrent identical requests so a burst
+  // of simultaneous students only triggers one real Apps Script call.
+  if (inFlight.has(key)) {
+    return inFlight.get(key);
   }
-
-  if (key) {
-    readCache.set(key, { value: body.data, expiresAt: Date.now() + READ_CACHE_TTL_MS });
-  } else {
-    // Any write can change what a read would return, so drop everything
-    // cached rather than trying to patch individual entries.
-    clearReadCache();
-  }
-
-  return body.data;
+  const request = fetchFromGas_(action, payload)
+    .then((data) => { readCache.set(key, { value: data, cachedAt: Date.now() }); return data; })
+    .finally(() => inFlight.delete(key));
+  inFlight.set(key, request);
+  return request;
 }
 
 // ---------- Generic table helpers ----------
