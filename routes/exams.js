@@ -19,13 +19,27 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   if (req.user.role === 'student') {
     let questions = await gas.find('Questions', { examId: exam.id });
     if (String(exam.shuffleQuestions) === 'true') questions = shuffle(questions);
-    questions = questions.map(({ correctAnswer, ...rest }) => rest);
+    questions = questions.map(({ correctAnswer, ...rest }) => parseQuestionOptions_(rest));
     return res.json({ ok: true, data: { ...exam, questions } });
   }
 
-  const questions = await gas.find('Questions', { examId: exam.id });
+  const questions = (await gas.find('Questions', { examId: exam.id })).map(parseQuestionOptions_);
   res.json({ ok: true, data: { ...exam, questions } });
 }));
+
+// Questions are stored with options/correctAnswer as JSON-stringified text
+// (so the sheet cell stays a single string); parse them back into real
+// arrays/values before handing them to any frontend.
+function parseQuestionOptions_(q) {
+  return {
+    ...q,
+    options: q.options ? safeParseJson_(q.options) : undefined
+  };
+}
+
+function safeParseJson_(value) {
+  try { return JSON.parse(value); } catch (e) { return value; }
+}
 
 // POST /api/exams/:id/submit  (student submits exam answers directly by examId)
 router.post('/:id/submit', requireAuth, requireRole('student'), asyncHandler(async (req, res) => {
@@ -64,7 +78,7 @@ router.post('/:id/submit', requireAuth, requireRole('student'), asyncHandler(asy
   // Grade the attempt
   const questions = await gas.find('Questions', { examId });
   const { gradeAttempt } = require('../utils/grading');
-  const graded = gradeAttempt(attempt, questions, exam);
+  const graded = gradeAttempt(questions, answers || {}, exam);
 
   // Update attempt with grades
   const updated = await gas.update('Attempts', attempt.id, {
@@ -124,6 +138,12 @@ router.get('/', requireAuth, requireRole('student'), asyncHandler(async (req, re
   });
 
   res.json({ exams: enriched });
+}));
+
+// GET /api/exams/admin/all  (admin: flat list of every exam, for filters/dropdowns)
+router.get('/admin/all', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+  const exams = await gas.getAll('Exams');
+  res.json({ ok: true, data: exams });
 }));
 
 router.use(requireAuth, requireRole('admin'));
