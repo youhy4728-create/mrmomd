@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const asyncHandler = require('../utils/asyncHandler');
 const gas = require('../services/gasClient');
-const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../middleware/auth');
+const { signAccessToken, signRefreshToken, verifyRefreshToken, requireAuth, requireRole } = require('../middleware/auth');
 const config = require('../config/config');
 
 const router = express.Router();
@@ -90,6 +90,28 @@ router.post('/admin/login', asyncHandler(async (req, res) => {
   const refreshToken = signRefreshToken(userPayload);
 
   res.json({ ok: true, data: { accessToken, refreshToken, user: userPayload } });
+}));
+
+// POST /api/auth/change-password  { currentPassword, newPassword }  (admin only)
+router.post('/change-password', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ ok: false, error: 'currentPassword and newPassword are required' });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ ok: false, error: 'كلمة المرور الجديدة لازم تكون 8 حروف على الأقل' });
+  }
+
+  const admin = await gas.getAdminByUsername(req.user.username);
+  if (!admin) return res.status(404).json({ ok: false, error: 'Admin not found' });
+
+  const valid = await bcrypt.compare(currentPassword, admin.passwordHash);
+  if (!valid) return res.status(401).json({ ok: false, error: 'كلمة المرور الحالية غلط' });
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await gas.updateAdminPassword(admin.id, passwordHash);
+
+  res.json({ ok: true, data: { changed: true } });
 }));
 
 // POST /api/auth/student/login  { code, name, phone }

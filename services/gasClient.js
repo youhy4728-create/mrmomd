@@ -132,6 +132,7 @@ const remove = (table, id) => callGas('delete', { table, id });
 const getAdminByUsername = (username) => callGas('getAdminByUsername', { username });
 const countAdmins = () => callGas('countAdmins');
 const insertAdmin = (record) => callGas('insertAdmin', { record });
+const updateAdminPassword = (id, passwordHash) => callGas('updateAdminPassword', { id, passwordHash });
 const getStudentByCode = (code) => callGas('getStudentByCode', { code });
 const uploadFile = (payload) => callGas('uploadFile', payload);
 const deleteFile = (fileId) => callGas('deleteFile', { fileId });
@@ -179,6 +180,6 @@ function getLastGasError() { return lastGasError; }
 
 module.exports = {
   callGas, getAll, getById, find, insert, update, remove,
-  getAdminByUsername, countAdmins, insertAdmin, getStudentByCode, uploadFile, deleteFile,
+  getAdminByUsername, countAdmins, insertAdmin, updateAdminPassword, getStudentByCode, uploadFile, deleteFile,
   generateCodes, getSettings, updateSetting
 };
